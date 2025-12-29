@@ -1,0 +1,13 @@
+mysql -u root -p -h 127.0.0.1 -P 3306 overtime_easy
+
+SELECT * FROM Student WHERE StudentID = '113361234';
+
+SELECT StudentID, Name, CreatedAt FROM Student ORDER BY CreatedAt DESC LIMIT 10;
+
+SELECT AccountID, LastLogin FROM AppAccount WHERE AccountID = '113361234';
+
+SELECT
+  RecordID, StudentID, WorkDate, ClockIn, ClockOut, WorkMinutes, OvertimeMinutes, CreatedAt, UpdatedAt
+FROM AttendanceRecord
+WHERE StudentID = '113361234' AND WorkDate = CURDATE()
+ORDER BY CreatedAt DESC;
