@@ -1,7 +1,7 @@
 import React from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Clock, Calendar, Trophy, LogOut, Menu, X } from 'lucide-react';
+import { Clock, Calendar, Trophy, LogOut, Menu, X, Terminal, Award } from 'lucide-react';
 import { useState } from 'react';
 import clsx from 'clsx';
 
@@ -15,10 +15,14 @@ const Layout = () => {
         navigate('/login');
     };
 
+    // 根據用戶角色動態生成導航項目
     const navItems = [
         { path: '/', icon: Clock, label: '打卡' },
         { path: '/overview', icon: Calendar, label: '個人總覽' },
         { path: '/leaderboard', icon: Trophy, label: '排行榜' },
+        { path: '/achievements', icon: Award, label: '成就' },
+        // Terminal 只對 admin 顯示
+        ...(user?.role === 'admin' ? [{ path: '/terminal', icon: Terminal, label: 'Terminal' }] : []),
     ];
 
     return (
@@ -129,6 +133,16 @@ const Layout = () => {
                     <Outlet />
                 </div>
             </main>
+
+            {/* 瀏覽計數器 - 右上角 (手機版縮小並調整位置避免遮擋選單) */}
+            <div className="fixed top-16 right-2 sm:top-4 sm:right-4 md:top-6 md:right-6 z-10 opacity-70 hover:opacity-100 transition-opacity scale-75 sm:scale-100 origin-top-right">
+                <a href="https://www.stylemap.co.jp/" target="_blank" rel="noopener noreferrer">
+                    <img 
+                        src="https://www.f-counter.net/j/66/1767085034/" 
+                        alt="訪問計數器" 
+                    />
+                </a>
+            </div>
         </div>
     );
 };

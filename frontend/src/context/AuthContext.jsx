@@ -54,9 +54,9 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
-    const register = async (studentId, name, password) => {
+    const register = async (studentId, name, password, teamId) => {
         try {
-            const response = await api.post('/auth/register', { studentId, name, password });
+            const response = await api.post('/auth/register', { studentId, name, password, teamId });
             return { success: true, message: response.data.message };
         } catch (error) {
             return {

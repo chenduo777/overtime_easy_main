@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { format } from 'date-fns';
 import { zhTW } from 'date-fns/locale';
-import { Clock, Play, Square } from 'lucide-react';
+import { Clock, Play, Square, MessageCircle } from 'lucide-react';
 import api from '../api/axios';
 import clsx from 'clsx';
 
@@ -24,12 +24,23 @@ const Home = () => {
     const [status, setStatus] = useState({ clockIn: null, clockOut: null });
     const [loading, setLoading] = useState(true);
     const [currentMessage, setCurrentMessage] = useState('');
+    const [isMoodOpen, setIsMoodOpen] = useState(false);
 
     useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
         fetchStatus();
         return () => clearInterval(timer);
     }, []);
+
+    // 心情小語 3 秒後自動收起
+    useEffect(() => {
+        if (isMoodOpen) {
+            const autoCloseTimer = setTimeout(() => {
+                setIsMoodOpen(false);
+            }, 3000);
+            return () => clearTimeout(autoCloseTimer);
+        }
+    }, [isMoodOpen]);
 
     // 頁面載入時隨機顯示一條留言
     useEffect(() => {
@@ -43,13 +54,13 @@ const Home = () => {
             console.log('API Response:', response.data);
             const data = response.data;
 
-            const workHours = data.record?.WorkMinutes ? (data.record.WorkMinutes / 60).toFixed(1) : null;
-            const overtimeHours = data.record?.OvertimeMinutes ? (data.record.OvertimeMinutes / 60).toFixed(1) : null;
+            const workHours = data.record?.work_minutes ? (data.record.work_minutes / 60).toFixed(1) : null;
+            const overtimeHours = data.record?.overtime_minutes ? (data.record.overtime_minutes / 60).toFixed(1) : null;
 
             if (data.hasClocked) {
                 setStatus({
-                    clockIn: data.record.ClockIn,
-                    clockOut: data.record.ClockOut,
+                    clockIn: data.record.clock_in,
+                    clockOut: data.record.clock_out,
                     workHours,
                     overtimeHours,
                 });
@@ -97,51 +108,51 @@ const Home = () => {
     };
 
     return (
-        <div className="relative space-y-8">
+        <div className="relative space-y-4 sm:space-y-6 md:space-y-8">
             {/* Header Section */}
-            <div className="bg-gradient-to-br from-primary to-warning rounded-3xl p-8 text-white shadow-xl">
-                <div className="flex flex-col md:flex-row justify-between items-center gap-6">
-                    <div>
-                        <h2 className="text-3xl font-bold mb-2">
+            <div className="bg-gradient-to-br from-primary to-warning rounded-2xl sm:rounded-3xl p-4 sm:p-6 md:p-8 text-white shadow-xl">
+                <div className="flex flex-col md:flex-row justify-between items-center gap-4 sm:gap-6">
+                    <div className="text-center md:text-left">
+                        <h2 className="text-xl sm:text-2xl md:text-3xl font-bold mb-1 sm:mb-2">
                             {format(currentTime, 'yyyy年MM月dd日', { locale: zhTW })}
                         </h2>
-                        <p className="text-yellow-50 text-lg">
+                        <p className="text-yellow-50 text-sm sm:text-base md:text-lg">
                             {format(currentTime, 'EEEE', { locale: zhTW })}
                         </p>
                     </div>
-                    <div className="text-5xl md:text-7xl font-mono font-bold tracking-wider bg-white/10 px-6 py-3 rounded-2xl backdrop-blur-sm">
+                    <div className="text-3xl sm:text-5xl md:text-7xl font-mono font-bold tracking-wider bg-white/10 px-4 sm:px-6 py-2 sm:py-3 rounded-xl sm:rounded-2xl backdrop-blur-sm">
                         {format(currentTime, 'HH:mm:ss')}
                     </div>
                 </div>
             </div>
 
             {/* Action Buttons */}
-            <div className="grid md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 md:gap-6">
                 <button
                     onClick={() => handleClock('in')}
                     disabled={!canClockIn}
                     className={clsx(
-                        'group relative overflow-hidden p-8 rounded-3xl transition-all duration-300 transform hover:-translate-y-1',
+                        'group relative overflow-hidden p-4 sm:p-6 md:p-8 rounded-2xl sm:rounded-3xl transition-all duration-300 transform hover:-translate-y-1',
                         canClockIn
                             ? 'bg-white hover:shadow-xl border-2 border-primary/10 cursor-pointer'
                             : 'bg-gray-100 cursor-not-allowed opacity-60'
                     )}
                 >
                     <div className="flex items-center justify-between relative z-10">
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3 sm:gap-4">
                             <div className={clsx(
-                                'p-4 rounded-2xl',
+                                'p-3 sm:p-4 rounded-xl sm:rounded-2xl',
                                 canClockIn ? 'bg-primary/10 text-primary' : 'bg-gray-200 text-gray-400'
                             )}>
-                                <Play className="w-8 h-8 fill-current" />
+                                <Play className="w-6 h-6 sm:w-8 sm:h-8 fill-current" />
                             </div>
                             <div className="text-left">
                                 <h3 className={clsx(
-                                    'text-2xl font-bold',
+                                    'text-lg sm:text-xl md:text-2xl font-bold',
                                     canClockIn ? 'text-gray-900' : 'text-gray-400'
                                 )}>上班打卡</h3>
                                 <p className={clsx(
-                                    'text-sm mt-1',
+                                    'text-xs sm:text-sm mt-1',
                                     canClockIn ? 'text-secondary' : 'text-gray-400'
                                 )}>
                                     {isCurrentlyClockedIn
@@ -157,27 +168,27 @@ const Home = () => {
                     onClick={() => handleClock('out')}
                     disabled={!canClockOut}
                     className={clsx(
-                        'group relative overflow-hidden p-8 rounded-3xl transition-all duration-300 transform hover:-translate-y-1',
+                        'group relative overflow-hidden p-4 sm:p-6 md:p-8 rounded-2xl sm:rounded-3xl transition-all duration-300 transform hover:-translate-y-1',
                         canClockOut
                             ? 'bg-white hover:shadow-xl border-2 border-orange-500/10 cursor-pointer'
                             : 'bg-gray-100 cursor-not-allowed opacity-60'
                     )}
                 >
                     <div className="flex items-center justify-between relative z-10">
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3 sm:gap-4">
                             <div className={clsx(
-                                'p-4 rounded-2xl',
+                                'p-3 sm:p-4 rounded-xl sm:rounded-2xl',
                                 canClockOut ? 'bg-orange-500/10 text-orange-500' : 'bg-gray-200 text-gray-400'
                             )}>
-                                <Square className="w-8 h-8 fill-current" />
+                                <Square className="w-6 h-6 sm:w-8 sm:h-8 fill-current" />
                             </div>
                             <div className="text-left">
                                 <h3 className={clsx(
-                                    'text-2xl font-bold',
+                                    'text-lg sm:text-xl md:text-2xl font-bold',
                                     canClockOut ? 'text-gray-900' : 'text-gray-400'
                                 )}>下班打卡</h3>
                                 <p className={clsx(
-                                    'text-sm mt-1',
+                                    'text-xs sm:text-sm mt-1',
                                     canClockOut ? 'text-secondary' : 'text-gray-400'
                                 )}>
                                     {status.clockOut
@@ -191,47 +202,60 @@ const Home = () => {
             </div>
 
             {/* Status Summary */}
-            <div className="bg-white rounded-3xl p-8 shadow-sm border border-gray-100">
-                <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
-                    <Clock className="w-5 h-5 text-primary" />
+            <div className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 md:p-8 shadow-sm border border-gray-100">
+                <h3 className="text-base sm:text-lg font-bold text-gray-900 mb-4 sm:mb-6 flex items-center gap-2">
+                    <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-primary" />
                     今日概況
                 </h3>
-                <div className="grid grid-cols-2 gap-8 py-8">
+                <div className="grid grid-cols-2 gap-4 sm:gap-6 md:gap-8 py-4 sm:py-6 md:py-8">
                     <div className="text-center border-r border-gray-100">
-                        <p className="text-sm text-secondary mb-3">本日總工時</p>
-                        <p className="text-6xl font-bold text-primary mb-2">
+                        <p className="text-xs sm:text-sm text-secondary mb-2 sm:mb-3">本日總工時</p>
+                        <p className="text-3xl sm:text-5xl md:text-6xl font-bold text-primary mb-1 sm:mb-2">
                             {status.workHours || '0.0'}
                         </p>
-                        <p className="text-2xl text-yellow-600 font-medium">小時</p>
+                        <p className="text-lg sm:text-xl md:text-2xl text-yellow-600 font-medium">小時</p>
                     </div>
                     <div className="text-center">
-                        <p className="text-sm text-secondary mb-3">本日加班時數</p>
-                        <p className="text-6xl font-bold text-orange-500 mb-2">
+                        <p className="text-xs sm:text-sm text-secondary mb-2 sm:mb-3">本日加班時數</p>
+                        <p className="text-3xl sm:text-5xl md:text-6xl font-bold text-orange-500 mb-1 sm:mb-2">
                             {status.overtimeHours || '0.0'}
                         </p>
-                        <p className="text-2xl text-orange-400 font-medium">小時</p>
+                        <p className="text-lg sm:text-xl md:text-2xl text-orange-400 font-medium">小時</p>
                     </div>
                 </div>
             </div>
 
-            {/* 右下角個性化留言 */}
-            {/* 右下角心情小語 */}
-            <div className="fixed bottom-8 right-8 w-64 h-36 rounded-2xl shadow-2xl overflow-hidden z-50 group hover:scale-105 transition-transform duration-300">
-                <img
-                    src="/homepage.jpg"
-                    alt="Mood Background"
-                    className="absolute inset-0 w-full h-full object-cover brightness-50 group-hover:brightness-40 transition-all"
-                />
-                <div className="absolute inset-0 p-6 flex flex-col justify-end text-white">
-                    <div className="flex items-center gap-2 mb-2">
-                        <span className="text-2xl">💬</span>
-                        <p className="text-sm font-bold text-yellow-300">心情小語</p>
+            {/* 右下角心情小語 - 可收合，3秒自動關閉 */}
+            {isMoodOpen ? (
+                <div 
+                    onClick={() => setIsMoodOpen(false)}
+                    className="fixed bottom-4 right-4 sm:bottom-8 sm:right-8 w-56 sm:w-64 h-36 sm:h-40 rounded-2xl shadow-2xl overflow-hidden z-50 group cursor-pointer"
+                    style={{ animation: 'fadeIn 0.3s ease-out' }}
+                >
+                    <img
+                        src="/homepage.jpg"
+                        alt="Mood Background"
+                        className="absolute inset-0 w-full h-full object-cover brightness-50 group-hover:brightness-40 transition-all"
+                    />
+                    <div className="absolute inset-0 p-4 sm:p-6 flex flex-col justify-end text-white">
+                        <div className="flex items-center gap-2 mb-2">
+                            <span className="text-xl sm:text-2xl">💬</span>
+                            <p className="text-xs sm:text-sm font-bold text-yellow-300">心情小語</p>
+                            <span className="ml-auto text-[10px] text-white/60">點擊關閉</span>
+                        </div>
+                        <p className="text-xs sm:text-sm leading-relaxed font-medium line-clamp-3">
+                            {currentMessage}
+                        </p>
                     </div>
-                    <p className="text-sm leading-relaxed font-medium text-shadow-sm">
-                        {currentMessage}
-                    </p>
                 </div>
-            </div>
+            ) : (
+                <button
+                    onClick={() => setIsMoodOpen(true)}
+                    className="fixed bottom-4 right-4 sm:bottom-8 sm:right-8 w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-gradient-to-br from-primary to-warning shadow-lg z-50 flex items-center justify-center hover:scale-110 transition-transform duration-300"
+                >
+                    <MessageCircle className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
+                </button>
+            )}
         </div>
     );
 };

@@ -7,6 +7,8 @@ const { testConnection } = require('./config/database');
 const authRoutes = require('./routes/auth');
 const attendanceRoutes = require('./routes/attendance');
 const statsRoutes = require('./routes/stats');
+const terminalRoutes = require('./routes/terminal');
+const rewardRoutes = require('./routes/reward');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,6 +25,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/terminal', terminalRoutes);
+app.use('/api/reward', rewardRoutes);
 
 // 根路由
 app.get('/', (req, res) => {

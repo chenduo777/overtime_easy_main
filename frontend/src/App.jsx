@@ -6,6 +6,9 @@ import Login from './pages/Login';
 import Home from './pages/Home';
 import Overview from './pages/Overview';
 import Leaderboard from './pages/Leaderboard';
+import Achievements from './pages/Achievements';
+
+import Terminal from './pages/Terminal';
 
 const PrivateRoute = ({ children }) => {
   const { user, loading } = useAuth();
@@ -36,6 +39,8 @@ function App() {
             <Route index element={<Home />} />
             <Route path="overview" element={<Overview />} />
             <Route path="leaderboard" element={<Leaderboard />} />
+            <Route path="achievements" element={<Achievements />} />
+            <Route path="terminal" element={<Terminal />} />
           </Route>
         </Routes>
       </Router>

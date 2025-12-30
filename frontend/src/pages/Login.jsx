@@ -1,17 +1,33 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { User, Lock, LogIn, UserPlus, UserCircle } from 'lucide-react';
+import { User, Lock, LogIn, UserPlus, UserCircle, Users } from 'lucide-react';
+import api from '../api/axios';
 
 const Login = () => {
     const [studentId, setStudentId] = useState('');
     const [name, setName] = useState('');
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
+    const [teamId, setTeamId] = useState('');
+    const [teams, setTeams] = useState([]);
     const [error, setError] = useState('');
     const [isRegisterMode, setIsRegisterMode] = useState(false);
     const { login, register } = useAuth();
     const navigate = useNavigate();
+
+    // 載入組別列表
+    useEffect(() => {
+        const fetchTeams = async () => {
+            try {
+                const response = await api.get('/auth/teams');
+                setTeams(response.data.teams);
+            } catch (error) {
+                console.error('Failed to load teams:', error);
+            }
+        };
+        fetchTeams();
+    }, []);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -23,6 +39,10 @@ const Login = () => {
                 setError('請輸入姓名');
                 return;
             }
+            if (!teamId) {
+                setError('請選擇組別');
+                return;
+            }
             if (password !== confirmPassword) {
                 setError('密碼與確認密碼不一致');
                 return;
@@ -32,7 +52,7 @@ const Login = () => {
                 return;
             }
 
-            const result = await register(studentId, name, password);
+            const result = await register(studentId, name, password, teamId);
             if (result.success) {
                 setError('');
                 alert('註冊成功！請登入');
@@ -40,6 +60,7 @@ const Login = () => {
                 setName('');
                 setPassword('');
                 setConfirmPassword('');
+                setTeamId('');
             } else {
                 setError(result.error);
             }
@@ -118,6 +139,32 @@ const Login = () => {
                         </div>
                     )}
 
+                    {isRegisterMode && (
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                組別 <span className="text-red-500">*</span>
+                            </label>
+                            <div className="relative">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <Users className="h-5 w-5 text-gray-400" />
+                                </div>
+                                <select
+                                    value={teamId}
+                                    onChange={(e) => setTeamId(e.target.value)}
+                                    className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors bg-gray-50 focus:bg-white appearance-none"
+                                    required
+                                >
+                                    <option value="">請選擇組別</option>
+                                    {teams.map((team) => (
+                                        <option key={team.team_id} value={team.team_id}>
+                                            {team.team_name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+                    )}
+
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">
                             密碼
@@ -182,6 +229,7 @@ const Login = () => {
                             setName('');
                             setPassword('');
                             setConfirmPassword('');
+                            setTeamId('');
                         }}
                         className="text-sm text-primary hover:text-warning font-medium transition-colors"
                     >

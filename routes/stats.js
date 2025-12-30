@@ -5,6 +5,7 @@ const {
   getOvertimeLeaderboard,
   getViolationLeaderboard,
   getCombinedLeaderboard,
+  getTeamLeaderboard,
   getSystemOverview
 } = require('../controllers/statsController');
 const { authenticateToken } = require('../middleware/auth');
@@ -17,6 +18,9 @@ router.get('/my', getMyStats);
 
 // 加班排行榜
 router.get('/leaderboard/overtime', getOvertimeLeaderboard);
+
+// 組別排行榜
+router.get('/leaderboard/team', getTeamLeaderboard);
 
 // 違規排行榜
 router.get('/leaderboard/violation', getViolationLeaderboard);

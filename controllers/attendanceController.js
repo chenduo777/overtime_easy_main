@@ -1,229 +1,134 @@
 const { pool } = require('../config/database');
+const { calculateOvertime, calculateWorkMinutes, isOvernight, isWeekend } = require('../utils/overtimeCalculator');
+const { checkAndGrantRewardsForStudent } = require('./rewardController');
 
-// 工作時間常數
-const WORK_START = '10:00:00';
-const WORK_END = '20:00:00';
-
-// 計算工時、加班（支援跨日）
-function calculateWorkTime(clockInTime, clockOutTime, workDate) {
-  // 建立完整的日期時間物件
-  const clockInDateTime = new Date(`${workDate}T${clockInTime}`);
-  let clockOutDateTime = new Date(`${workDate}T${clockOutTime}`);
-
-  // 處理跨日：如果下班時間 <= 上班時間，表示跨日了
-  if (clockOutDateTime <= clockInDateTime) {
-    clockOutDateTime.setDate(clockOutDateTime.getDate() + 1);
-  }
-
-  // 總工時（分鐘）
-  const totalMinutes = Math.round((clockOutDateTime - clockInDateTime) / 60000);
-
-  // 標準工時段：10:00-20:00
-  const workStartDateTime = new Date(`${workDate}T10:00:00`);
-  const workEndDateTime = new Date(`${workDate}T20:00:00`);
-
-  // 計算與標準工時段的重疊時間
-  const overlapStart = clockInDateTime > workStartDateTime ? clockInDateTime : workStartDateTime;
-  const overlapEnd = clockOutDateTime < workEndDateTime ? clockOutDateTime : workEndDateTime;
-
-  let standardMinutes = 0;
-  if (overlapEnd > overlapStart) {
-    standardMinutes = Math.round((overlapEnd - overlapStart) / 60000);
-  }
-
-  // 加班 = 總工時 - 標準工時
-  const overtimeMinutes = totalMinutes - standardMinutes;
-
-  return {
-    workMinutes: totalMinutes,
-    overtimeMinutes: overtimeMinutes
-  };
-}
-
-// 單鍵打卡
+// 單鍵打卡（支援跨日）
 async function clockInOut(req, res) {
   const studentId = req.user.studentId;
   const now = new Date();
-  // 使用本地日期，避免 UTC 時區偏移
+  
+  // 使用本地日期時間
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   const today = `${year}-${month}-${day}`; // YYYY-MM-DD
-  const currentTime = now.toTimeString().split(' ')[0]; // HH:MM:SS
 
   try {
-    // 1. 確保今天的日期存在於 WorkDate 表
-    const weekday = now.getDay(); // 0=週日, 1=週一, ..., 6=週六
-    const isHoliday = (weekday === 0 || weekday === 6) ? 1 : 0;
-
-    await pool.query(
-      `INSERT IGNORE INTO WorkDate (WorkDate, Weekday, IsHoliday)
-       VALUES (?, ?, ?)`,
-      [today, weekday, isHoliday]
+    // 1. 先查是否有未完成的記錄（不限日期，支援跨日打卡）
+    const [unfinished] = await pool.query(
+      `SELECT record_id, work_date, clock_in 
+       FROM AttendanceRecord 
+       WHERE student_id = ? AND clock_out IS NULL
+       ORDER BY work_date DESC, clock_in DESC
+       LIMIT 1`,
+      [studentId]
     );
 
-    // 2. 查詢今天的所有打卡紀錄，按時間排序
-    const [records] = await pool.query(
-      `SELECT RecordID, ClockIn, ClockOut FROM AttendanceRecord
-       WHERE StudentID = ? AND WorkDate = ?
-       ORDER BY ClockIn DESC`,
-      [studentId, today]
-    );
+    // 2. 有未完成記錄 → 補打下班卡（支援跨日）
+    if (unfinished.length > 0) {
+      const record = unfinished[0];
+      const clockIn = new Date(record.clock_in);
+      const clockOut = now;
+      const workDate = record.work_date;
+      
+      // 格式化 work_date
+      const workDateStr = typeof workDate === 'string' 
+        ? workDate.split('T')[0] 
+        : workDate.toISOString().split('T')[0];
 
-    // 3. 判斷打卡邏輯
-    // 如果沒有紀錄，或最新的一筆紀錄已經有 ClockOut -> 新增一筆 (ClockIn)
-    if (records.length === 0 || records[0].ClockOut) {
-      const [result] = await pool.query(
-        `INSERT INTO AttendanceRecord (StudentID, WorkDate, ClockIn)
-         VALUES (?, ?, ?)`,
-        [studentId, today, currentTime]
+      // 計算工時
+      const workMinutes = calculateWorkMinutes(clockIn, clockOut);
+      const overtimeMinutes = calculateOvertime(clockIn, clockOut, workDateStr);
+      const overnight = isOvernight(clockIn, clockOut);
+
+      await pool.query(
+        `UPDATE AttendanceRecord 
+         SET clock_out = ?, work_minutes = ?
+         WHERE record_id = ?`,
+        [clockOut, workMinutes, record.record_id]
       );
 
+      // 下班打卡後自動檢查成就
+      const newRewards = await checkAndGrantRewardsForStudent(studentId);
+
       return res.json({
-        message: '上班打卡成功',
-        action: 'clock_in',
-        recordId: result.insertId,
-        clockIn: currentTime,
-        date: today
+        message: overnight ? '下班打卡成功（跨日）' : '下班打卡成功',
+        action: 'clock_out',
+        record_id: record.record_id,
+        work_date: workDateStr,
+        clock_in: clockIn.toISOString(),
+        clock_out: clockOut.toISOString(),
+        work_minutes: workMinutes,
+        overtime_minutes: overtimeMinutes,
+        is_overnight: overnight,
+        is_weekend: isWeekend(workDateStr),
+        new_rewards: newRewards
       });
     }
 
-    // 4. 如果最新的一筆紀錄沒有 ClockOut -> 更新這筆 (ClockOut)
-    const record = records[0];
-    const clockIn = record.ClockIn;
-    const clockOut = currentTime;
-
-    // 查詢是否為假日
-    const [dateInfo] = await pool.query(
-      'SELECT IsHoliday FROM WorkDate WHERE WorkDate = ?',
-      [today]
-    );
-    const isHolidayToday = dateInfo[0].IsHoliday === 1;
-
-    let workMinutes = 0;
-    let overtimeMinutes = 0;
-
-    if (isHolidayToday) {
-      // 假日（週六、週日）→ 全部算加班
-      const clockInDateTime = new Date(`${today}T${clockIn}`);
-      let clockOutDateTime = new Date(`${today}T${clockOut}`);
-
-      // 處理跨日
-      if (clockOutDateTime <= clockInDateTime) {
-        clockOutDateTime.setDate(clockOutDateTime.getDate() + 1);
-      }
-
-      workMinutes = Math.round((clockOutDateTime - clockInDateTime) / 60000);
-      overtimeMinutes = workMinutes;
-    } else {
-      // 平日邏輯
-      const result = calculateWorkTime(clockIn, clockOut, today);
-      workMinutes = result.workMinutes;
-      overtimeMinutes = result.overtimeMinutes;
-    }
-
-    // 更新紀錄（不再記錄違規時間）
-    await pool.query(
-      `UPDATE AttendanceRecord
-       SET ClockOut = ?, WorkMinutes = ?, OvertimeMinutes = ?
-       WHERE RecordID = ?`,
-      [clockOut, workMinutes, overtimeMinutes, record.RecordID]
+    // 3. 無未完成記錄 → 新增上班打卡
+    const [result] = await pool.query(
+      `INSERT INTO AttendanceRecord (student_id, work_date, clock_in)
+       VALUES (?, ?, ?)`,
+      [studentId, today, now]
     );
 
-    // 移除 updateSummaries，改為即時查詢
-
-    res.json({
-      message: '下班打卡成功',
-      action: 'clock_out',
-      recordId: record.RecordID,
-      clockIn: clockIn,
-      clockOut: clockOut,
-      date: today,
-      workMinutes,
-      overtimeMinutes,
-      isHoliday: isHolidayToday
+    return res.json({
+      message: '上班打卡成功',
+      action: 'clock_in',
+      record_id: result.insertId,
+      work_date: today,
+      clock_in: now.toISOString(),
+      is_weekend: isWeekend(today)
     });
+
   } catch (error) {
     console.error('打卡錯誤：', error);
     res.status(500).json({ error: '打卡失敗，請稍後再試' });
   }
 }
 
-// 更新統計資料
-async function updateSummaries(studentId, period) {
-  try {
-    // 計算加班總時數
-    const [overtimeData] = await pool.query(
-      `SELECT SUM(OvertimeMinutes) as total
-       FROM AttendanceRecord
-       WHERE StudentID = ? AND DATE_FORMAT(WorkDate, '%Y-%m') = ?`,
-      [studentId, period]
-    );
-
-    const totalOvertime = overtimeData[0].total || 0;
-
-    // 更新或插入加班統計
-    await pool.query(
-      `INSERT INTO OvertimeSummary (StudentID, Period, TotalOvertimeMinutes)
-       VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE TotalOvertimeMinutes = ?`,
-      [studentId, period, totalOvertime, totalOvertime]
-    );
-
-    // 計算違規統計
-    const [violationData] = await pool.query(
-      `SELECT
-         SUM(CASE WHEN ViolationMinutes > 0 THEN 1 ELSE 0 END) as earlyLeaveCount,
-         SUM(IsAbsent) as absenceCount,
-         SUM(ViolationMinutes) as totalViolation
-       FROM AttendanceRecord
-       WHERE StudentID = ? AND DATE_FORMAT(WorkDate, '%Y-%m') = ?`,
-      [studentId, period]
-    );
-
-    const { earlyLeaveCount, absenceCount, totalViolation } = violationData[0];
-
-    // 更新或插入違規統計
-    await pool.query(
-      `INSERT INTO ViolationSummary (StudentID, Period, EarlyLeaveCount, AbsenceCount, TotalViolationMinutes)
-       VALUES (?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         EarlyLeaveCount = ?,
-         AbsenceCount = ?,
-         TotalViolationMinutes = ?`,
-      [
-        studentId, period,
-        earlyLeaveCount || 0,
-        absenceCount || 0,
-        totalViolation || 0,
-        earlyLeaveCount || 0,
-        absenceCount || 0,
-        totalViolation || 0
-      ]
-    );
-  } catch (error) {
-    console.error('更新統計失敗：', error);
-  }
-}
-
 // 查詢今日打卡狀態
 async function getTodayStatus(req, res) {
   const studentId = req.user.studentId;
-  // 使用本地日期，避免 UTC 時區偏移
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
   try {
-    // 查詢今天的所有紀錄，按時間排序
-    const [records] = await pool.query(
-      `SELECT RecordID, ClockIn, ClockOut, WorkMinutes, OvertimeMinutes, ViolationMinutes
+    // 查詢是否有未完成的打卡記錄（支援跨日）
+    const [unfinished] = await pool.query(
+      `SELECT record_id, work_date, clock_in
+       FROM AttendanceRecord 
+       WHERE student_id = ? AND clock_out IS NULL
+       ORDER BY work_date DESC, clock_in DESC
+       LIMIT 1`,
+      [studentId]
+    );
+
+    // 查詢今天的所有紀錄
+    const [todayRecords] = await pool.query(
+      `SELECT record_id, clock_in, clock_out, work_minutes
        FROM AttendanceRecord
-       WHERE StudentID = ? AND WorkDate = ?
-       ORDER BY ClockIn DESC`,
+       WHERE student_id = ? AND work_date = ?
+       ORDER BY clock_in DESC`,
       [studentId, today]
     );
 
-    if (records.length === 0) {
+    // 計算今日總計（包含即時計算的加班時數）
+    let totalWorkMinutes = 0;
+    let totalOvertimeMinutes = 0;
+
+    todayRecords.forEach(r => {
+      totalWorkMinutes += (r.work_minutes || 0);
+      if (r.clock_in && r.clock_out) {
+        totalOvertimeMinutes += calculateOvertime(r.clock_in, r.clock_out, today);
+      }
+    });
+
+    // 如果有未完成的記錄，表示「上班中」
+    const isClockedIn = unfinished.length > 0;
+
+    if (todayRecords.length === 0 && !isClockedIn) {
       return res.json({
         hasClocked: false,
         message: '今天尚未打卡',
@@ -231,31 +136,22 @@ async function getTodayStatus(req, res) {
       });
     }
 
-    // 取最新的一筆
-    const latestRecord = records[0];
-
-    // 如果最新的一筆已經有下班時間，表示目前是「已下班」狀態（可以再次上班）
-    // 如果沒有下班時間，表示目前是「上班中」狀態
-    const isClockedIn = !latestRecord.ClockOut;
-
-    // 計算今日總計
-    let totalWorkMinutes = 0;
-    let totalOvertimeMinutes = 0;
-
-    records.forEach(r => {
-      totalWorkMinutes += (r.WorkMinutes || 0);
-      totalOvertimeMinutes += (r.OvertimeMinutes || 0);
-    });
+    // 取最新的一筆（可能是今天的，或是未完成的跨日記錄）
+    const latestRecord = isClockedIn ? unfinished[0] : todayRecords[0];
 
     res.json({
-      hasClocked: isClockedIn, // 前端用這個判斷顯示「上班」還是「下班」按鈕
+      hasClocked: isClockedIn,
       record: {
-        ...latestRecord,
-        isCompleted: !!latestRecord.ClockOut,
-        WorkMinutes: totalWorkMinutes, // 返回今日總計
-        OvertimeMinutes: totalOvertimeMinutes // 返回今日總計
+        record_id: latestRecord.record_id,
+        work_date: latestRecord.work_date,
+        clock_in: latestRecord.clock_in,
+        clock_out: latestRecord.clock_out || null,
+        isCompleted: !isClockedIn,
+        work_minutes: totalWorkMinutes,
+        overtime_minutes: totalOvertimeMinutes
       },
-      date: today
+      date: today,
+      is_weekend: isWeekend(today)
     });
   } catch (error) {
     console.error('查詢錯誤：', error);
@@ -271,41 +167,52 @@ async function getRecords(req, res) {
   try {
     let query = `
       SELECT
-        ar.RecordID,
-        ar.StudentID,
-        DATE_FORMAT(ar.WorkDate, '%Y-%m-%d') as WorkDate,
-        ar.ClockIn,
-        ar.ClockOut,
-        ar.WorkMinutes,
-        ar.OvertimeMinutes,
-        ar.ViolationMinutes,
-        ar.IsAbsent,
-        ar.CreatedAt,
-        ar.UpdatedAt,
-        wd.IsHoliday
-      FROM AttendanceRecord ar
-      INNER JOIN WorkDate wd ON ar.WorkDate = wd.WorkDate
-      WHERE ar.StudentID = ?
+        record_id,
+        student_id,
+        DATE_FORMAT(work_date, '%Y-%m-%d') as work_date,
+        clock_in,
+        clock_out,
+        work_minutes
+      FROM AttendanceRecord
+      WHERE student_id = ?
     `;
     const params = [studentId];
 
     if (startDate) {
-      query += ' AND ar.WorkDate >= ?';
+      query += ' AND work_date >= ?';
       params.push(startDate);
     }
 
     if (endDate) {
-      query += ' AND ar.WorkDate <= ?';
+      query += ' AND work_date <= ?';
       params.push(endDate);
     }
 
-    query += ' ORDER BY ar.WorkDate DESC';
+    query += ' ORDER BY work_date DESC, clock_in DESC';
 
     const [records] = await pool.query(query, params);
 
+    // 為每筆記錄計算加班時數和跨日標記
+    const enrichedRecords = records.map(r => {
+      const overtimeMinutes = calculateOvertime(r.clock_in, r.clock_out, r.work_date);
+      const overnight = isOvernight(r.clock_in, r.clock_out);
+      
+      return {
+        record_id: r.record_id,
+        student_id: r.student_id,
+        work_date: r.work_date,
+        clock_in: r.clock_in,
+        clock_out: r.clock_out,
+        work_minutes: r.work_minutes || 0,
+        overtime_minutes: overtimeMinutes,
+        is_overnight: overnight,
+        is_weekend: isWeekend(r.work_date)
+      };
+    });
+
     res.json({
-      total: records.length,
-      records
+      total: enrichedRecords.length,
+      records: enrichedRecords
     });
   } catch (error) {
     console.error('查詢錯誤：', error);
