@@ -15,10 +15,11 @@ async function clockInOut(req, res) {
 
   try {
     // 1. 先查是否有未完成的記錄（不限日期，支援跨日打卡）
+    // 排除 work_minutes = -1 的記錄（已被凌晨5點重置標記為待補打卡）
     const [unfinished] = await pool.query(
       `SELECT record_id, work_date, clock_in 
        FROM AttendanceRecord 
-       WHERE student_id = ? AND clock_out IS NULL
+       WHERE student_id = ? AND clock_out IS NULL AND (work_minutes IS NULL OR work_minutes != -1)
        ORDER BY work_date DESC, clock_in DESC
        LIMIT 1`,
       [studentId]
@@ -96,10 +97,11 @@ async function getTodayStatus(req, res) {
 
   try {
     // 查詢是否有未完成的打卡記錄（支援跨日）
+    // 排除 work_minutes = -1 的記錄（已被凌晨5點重置標記為待補打卡）
     const [unfinished] = await pool.query(
       `SELECT record_id, work_date, clock_in
        FROM AttendanceRecord 
-       WHERE student_id = ? AND clock_out IS NULL
+       WHERE student_id = ? AND clock_out IS NULL AND (work_minutes IS NULL OR work_minutes != -1)
        ORDER BY work_date DESC, clock_in DESC
        LIMIT 1`,
       [studentId]
@@ -203,7 +205,7 @@ async function getRecords(req, res) {
         work_date: r.work_date,
         clock_in: r.clock_in,
         clock_out: r.clock_out,
-        work_minutes: r.work_minutes || 0,
+        work_minutes: r.work_minutes,
         overtime_minutes: overtimeMinutes,
         is_overnight: overnight,
         is_weekend: isWeekend(r.work_date)
@@ -220,4 +222,120 @@ async function getRecords(req, res) {
   }
 }
 
-module.exports = { clockInOut, getTodayStatus, getRecords };
+/**
+ * 補打卡下班（用於忘記打卡的記錄）
+ * 允許時間範圍: 當日 20:00 ~ 隔日 05:00
+ */
+async function retroactiveClockOut(req, res) {
+    const studentId = req.user.studentId;
+    const { recordId, clockOutTime } = req.body;
+
+    if (!recordId || !clockOutTime) {
+        return res.status(400).json({ error: '缺少必要參數' });
+    }
+
+    try {
+        // 1. 查詢該記錄
+        const [records] = await pool.query(
+            `SELECT record_id, student_id, work_date, clock_in, clock_out, work_minutes
+             FROM AttendanceRecord 
+             WHERE record_id = ? AND student_id = ?`,
+            [recordId, studentId]
+        );
+
+        if (records.length === 0) {
+            return res.status(404).json({ error: '找不到該記錄' });
+        }
+
+        const record = records[0];
+
+        // 2. 驗證是否為待補打卡記錄（clock_out IS NULL）
+        if (record.clock_out !== null) {
+            return res.status(400).json({ error: '該記錄已有下班時間，無法補打卡' });
+        }
+
+        // 3. 驗證補打卡時間範圍
+        const clockIn = new Date(record.clock_in);
+        
+        // 取得 work_date 字串（處理 Date 物件和字串格式）
+        let workDateStr;
+        if (typeof record.work_date === 'string') {
+            workDateStr = record.work_date.split('T')[0];
+        } else {
+            // MySQL DATE 類型會返回 Date 物件，使用本地時間格式化
+            const wd = record.work_date;
+            workDateStr = `${wd.getFullYear()}-${String(wd.getMonth() + 1).padStart(2, '0')}-${String(wd.getDate()).padStart(2, '0')}`;
+        }
+        
+        const clockOut = new Date(clockOutTime);
+        
+        // 確保 clockOut 大於 clockIn
+        if (clockOut <= clockIn) {
+            return res.status(400).json({ error: '下班時間必須晚於上班時間' });
+        }
+
+        // 驗證時間範圍 (20:00 ~ 隔天 05:00)
+        // 使用本地時間來比對，避免 UTC 時區問題
+        const clockOutHour = clockOut.getHours();
+        const clockOutYear = clockOut.getFullYear();
+        const clockOutMonth = String(clockOut.getMonth() + 1).padStart(2, '0');
+        const clockOutDay = String(clockOut.getDate()).padStart(2, '0');
+        const clockOutDateStr = `${clockOutYear}-${clockOutMonth}-${clockOutDay}`;
+        
+        // 計算 work_date 的隔天（使用本地時間）
+        const [wdYear, wdMonth, wdDay] = workDateStr.split('-').map(Number);
+        const workDateObj = new Date(wdYear, wdMonth - 1, wdDay);
+        workDateObj.setDate(workDateObj.getDate() + 1);
+        const nextDayYear = workDateObj.getFullYear();
+        const nextDayMonth = String(workDateObj.getMonth() + 1).padStart(2, '0');
+        const nextDayDay = String(workDateObj.getDate()).padStart(2, '0');
+        const nextDayStr = `${nextDayYear}-${nextDayMonth}-${nextDayDay}`;
+
+        const isValidTime = (
+            // 當天 20:00-23:59
+            (clockOutDateStr === workDateStr && clockOutHour >= 20) ||
+            // 隔天 00:00-04:59
+            (clockOutDateStr === nextDayStr && clockOutHour < 5)
+        );
+
+        if (!isValidTime) {
+            return res.status(400).json({ 
+                error: `補打卡時間必須在 ${workDateStr} 20:00 至 ${nextDayStr} 05:00 之間（您設定的是 ${clockOutDateStr} ${clockOutHour}:00）` 
+            });
+        }
+
+        // 4. 計算工時
+        const workMinutes = calculateWorkMinutes(clockIn, clockOut);
+        const overtimeMinutes = calculateOvertime(clockIn, clockOut, workDateStr);
+
+        // 5. 更新記錄
+        await pool.query(
+            `UPDATE AttendanceRecord 
+             SET clock_out = ?, work_minutes = ?
+             WHERE record_id = ?`,
+            [clockOut, workMinutes, recordId]
+        );
+
+        // 6. 檢查成就
+        const newRewards = await checkAndGrantRewardsForStudent(studentId);
+
+        res.json({
+            message: '補打卡成功',
+            record: {
+                record_id: recordId,
+                work_date: workDateStr,
+                clock_in: clockIn.toISOString(),
+                clock_out: clockOut.toISOString(),
+                work_minutes: workMinutes,
+                overtime_minutes: overtimeMinutes
+            },
+            new_rewards: newRewards
+        });
+
+    } catch (error) {
+        console.error('補打卡錯誤：', error);
+        res.status(500).json({ error: '補打卡失敗' });
+    }
+}
+
+module.exports = { clockInOut, getTodayStatus, getRecords, retroactiveClockOut };

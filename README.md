@@ -76,7 +76,8 @@ npm start
 
 **終端機 2 (前端)：**
 ```bash
-cd frontend
+cd frontend 
+npm run build
 npm run preview -- --host 0.0.0.0 --port 5173
 ```
 前端頁面將運行於 `http://localhost:5173`、`http://140.124.72.19:5173/`。

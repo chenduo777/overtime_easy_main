@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, parseISO, getDay, startOfWeek, endOfWeek } from 'date-fns';
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, startOfWeek, endOfWeek } from 'date-fns';
 import { zhTW } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, AlertCircle, Clock } from 'lucide-react';
 import api from '../api/axios';
 import clsx from 'clsx';
 
@@ -10,6 +10,12 @@ const Overview = () => {
     const [records, setRecords] = useState([]);
     const [selectedDate, setSelectedDate] = useState(new Date());
     const [loading, setLoading] = useState(true);
+    
+    // 補打卡相關狀態
+    const [showRetroModal, setShowRetroModal] = useState(false);
+    const [retroRecord, setRetroRecord] = useState(null);
+    const [retroTime, setRetroTime] = useState('22:00');
+    const [retroSubmitting, setRetroSubmitting] = useState(false);
 
     useEffect(() => {
         fetchRecords();
@@ -58,7 +64,7 @@ const Overview = () => {
     const calculateDayTotal = (dayRecords) => {
         if (!dayRecords || dayRecords.length === 0) return { totalWork: 0, totalOvertime: 0 };
 
-        const totalWorkMinutes = dayRecords.reduce((sum, r) => sum + (r.work_minutes || 0), 0);
+        const totalWorkMinutes = dayRecords.reduce((sum, r) => sum + (r.work_minutes > 0 ? r.work_minutes : 0), 0);
         const totalOvertimeMinutes = dayRecords.reduce((sum, r) => sum + (r.overtime_minutes || 0), 0);
 
         return {
@@ -85,6 +91,120 @@ const Overview = () => {
         }
         
         return formattedTime;
+    };
+
+    // 開啟補打卡 Modal
+    const openRetroModal = (record) => {
+        setRetroRecord(record);
+        setRetroTime('22:00');
+        setShowRetroModal(true);
+    };
+
+    // 送出補打卡
+    const submitRetroClockOut = async () => {
+        if (!retroRecord) return;
+        
+        setRetroSubmitting(true);
+        try {
+            const workDate = retroRecord.work_date.includes('T') 
+                ? retroRecord.work_date.split('T')[0] 
+                : retroRecord.work_date;
+            
+            // 判斷是當天還是隔天
+            const hour = parseInt(retroTime.split(':')[0]);
+            let clockOutDate = workDate;
+            
+            // 20:00-23:59 是當天，00:00-04:59 是隔天
+            if (hour >= 0 && hour < 5) {
+                // 凌晨0-5點視為隔天，手動計算日期避免時區問題
+                const [year, month, day] = workDate.split('-').map(Number);
+                const nextDay = new Date(year, month - 1, day + 1);
+                const nextYear = nextDay.getFullYear();
+                const nextMonth = String(nextDay.getMonth() + 1).padStart(2, '0');
+                const nextDayNum = String(nextDay.getDate()).padStart(2, '0');
+                clockOutDate = `${nextYear}-${nextMonth}-${nextDayNum}`;
+            }
+            // 20:00-23:59 保持 workDate（當天）
+            
+            const clockOutTime = `${clockOutDate}T${retroTime}:00`;
+            
+            console.log('補打卡資訊:', {
+                workDate,
+                retroTime,
+                hour,
+                clockOutDate,
+                clockOutTime
+            });
+
+            await api.patch('/attendance/retroactive-clock-out', {
+                recordId: retroRecord.record_id,
+                clockOutTime
+            });
+
+            alert('補打卡成功！');
+            setShowRetroModal(false);
+            fetchRecords(); // 重新載入資料
+        } catch (error) {
+            alert(error.response?.data?.error || '補打卡失敗');
+        } finally {
+            setRetroSubmitting(false);
+        }
+    };
+
+    // 生成可選時間選項 (20:00 ~ 隔天 04:59)
+    const generateTimeOptions = () => {
+        const options = [];
+        // 當天 20:00 ~ 23:59
+        for (let h = 20; h <= 23; h++) {
+            for (let m = 0; m < 60; m += 30) {
+                options.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+            }
+        }
+        // 隔天 00:00 ~ 04:59
+        for (let h = 0; h < 5; h++) {
+            for (let m = 0; m < 60; m += 30) {
+                options.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+            }
+        }
+        return options;
+    };
+
+    // 判斷是否為待補打卡記錄
+    // 允許所有 clock_out 為 null 的記錄補打卡（不管是否被 5AM 系統標記）
+    // 但排除「正在上班中」的當天記錄（今天剛打上班卡的）
+    const needsRetroClockOut = (record) => {
+        if (record.clock_out !== null) return false;
+        
+        // 取得今天日期
+        const today = new Date();
+        const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+        
+        // 取得記錄的工作日期
+        const workDate = record.work_date?.includes('T') 
+            ? record.work_date.split('T')[0] 
+            : record.work_date;
+        
+        // 如果是今天的記錄且 work_minutes 不是 -1，表示正在上班中
+        if (workDate === todayStr && record.work_minutes !== -1) {
+            return false;
+        }
+        
+        // 其他未打下班卡的記錄都可以補打卡
+        return true;
+    };
+
+    // 判斷是否正在上班中（今天的未完成記錄且非系統終止）
+    const isCurrentlyWorking = (record) => {
+        if (record.clock_out !== null) return false;
+        
+        const today = new Date();
+        const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+        
+        const workDate = record.work_date?.includes('T') 
+            ? record.work_date.split('T')[0] 
+            : record.work_date;
+        
+        return workDate === todayStr && record.work_minutes !== -1;
     };
 
     return (
@@ -134,6 +254,7 @@ const Overview = () => {
                         const isSelected = isSameDay(day, selectedDate);
                         const isToday = isSameDay(day, new Date());
                         const isCurrentMonth = isSameMonth(day, currentDate);
+                        const hasUnfinished = dayRecords.some(r => needsRetroClockOut(r));
 
                         return (
                             <button
@@ -145,7 +266,8 @@ const Overview = () => {
                                         ? 'border-primary bg-primary/5 ring-1 sm:ring-2 ring-primary/20'
                                         : 'border-transparent hover:bg-gray-50',
                                     isToday && !isSelected && 'bg-yellow-50 font-bold text-primary',
-                                    !isCurrentMonth && 'opacity-30'
+                                    !isCurrentMonth && 'opacity-30',
+                                    hasUnfinished && 'ring-2 ring-red-300'
                                 )}
                             >
                                 <span className={clsx(
@@ -157,20 +279,19 @@ const Overview = () => {
 
                                 {dayRecords.length > 0 && (
                                     <div className="flex flex-col gap-0.5 sm:gap-1 w-full px-0.5 sm:px-1">
-                                        {dayTotal.totalOvertime > 0 && (
+                                        {hasUnfinished ? (
+                                            <div className="text-[8px] sm:text-[10px] font-medium text-red-600 bg-red-100 rounded px-0.5 sm:px-1 py-0.5 text-center truncate w-full">
+                                                待補打卡
+                                            </div>
+                                        ) : dayTotal.totalOvertime > 0 && (
                                             <div className="text-[8px] sm:text-[10px] font-medium text-orange-600 bg-orange-100 rounded px-0.5 sm:px-1 py-0.5 text-center truncate w-full">
                                                 +{dayTotal.totalOvertime}h
                                             </div>
                                         )}
-                                        {dayRecords.length > 1 && (
+                                        {dayRecords.length > 1 && !hasUnfinished && (
                                             <div className="hidden sm:block text-[9px] font-medium text-yellow-700 bg-yellow-100 rounded px-1 py-0.5 text-center truncate w-full">
                                                 {dayRecords.length}段
                                             </div>
-                                        )}
-                                        {parseFloat(dayTotal.totalOvertime) > 0 ? (
-                                            <div className="w-1 h-1 sm:w-1.5 sm:h-1.5 rounded-full bg-red-500 mx-auto" />
-                                        ) : (
-                                            <div className="w-1 h-1 sm:w-1.5 sm:h-1.5 rounded-full bg-green-500 mx-auto" />
                                         )}
                                     </div>
                                 )}
@@ -186,7 +307,7 @@ const Overview = () => {
                     <h3 className="text-lg sm:text-xl font-bold text-gray-900">
                         {format(selectedDate, 'MM月dd日', { locale: zhTW })} 詳細資料
                     </h3>
-                    {selectedRecords.length > 0 && (
+                    {selectedRecords.length > 0 && !selectedRecords.some(r => needsRetroClockOut(r)) && (
                         <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-full overflow-hidden border-2 border-white shadow-md">
                             <img
                                 src={parseFloat(calculateDayTotal(selectedRecords).totalOvertime) > 0 ? "/tired.jpg" : "/happy.jpg"}
@@ -198,35 +319,63 @@ const Overview = () => {
                 </div>
 
                 {selectedRecords.length > 0 ? (
-                    <div className="space-y-6">
-                        {/* 多段工作記錄 */}
-                        <div className="space-y-4">
-                            {selectedRecords.map((record, index) => (
-                                <div key={record.record_id} className="border border-gray-200 rounded-2xl p-4 space-y-3">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <span className="text-sm font-semibold text-gray-700">
-                                            工作段 {index + 1}
+                    <div className="space-y-4">
+                        {selectedRecords.map((record, index) => (
+                            <div key={record.record_id} className={clsx(
+                                'border rounded-2xl p-4 space-y-3',
+                                needsRetroClockOut(record) ? 'border-red-300 bg-red-50' : 'border-gray-200'
+                            )}>
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-sm font-semibold text-gray-700">
+                                        工作段 {index + 1}
+                                    </span>
+                                    {needsRetroClockOut(record) && (
+                                        <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded flex items-center gap-1">
+                                            <AlertCircle className="w-3 h-3" />
+                                            待補打卡
                                         </span>
-                                        {record.is_overnight && (
-                                            <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
-                                                跨日
-                                            </span>
-                                        )}
-                                    </div>
+                                    )}
+                                    {isCurrentlyWorking(record) && (
+                                        <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded">
+                                            上班中
+                                        </span>
+                                    )}
+                                    {record.is_overnight && record.clock_out && (
+                                        <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
+                                            跨日
+                                        </span>
+                                    )}
+                                </div>
 
-                                    <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
-                                        <span className="text-sm text-secondary">上班</span>
-                                        <span className="font-mono font-bold text-gray-900">
-                                            {formatTime(record.clock_in)}
-                                        </span>
-                                    </div>
-                                    <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
-                                        <span className="text-sm text-secondary">下班</span>
-                                        <span className="font-mono font-bold text-gray-900">
-                                            {formatTime(record.clock_out, record.work_date)}
-                                        </span>
-                                    </div>
+                                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                                    <span className="text-sm text-secondary">上班</span>
+                                    <span className="font-mono font-bold text-gray-900">
+                                        {formatTime(record.clock_in)}
+                                    </span>
+                                </div>
+                                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                                    <span className="text-sm text-secondary">下班</span>
+                                    <span className={clsx(
+                                        'font-mono font-bold',
+                                        record.clock_out ? 'text-gray-900' : 'text-red-500'
+                                    )}>
+                                        {record.clock_out ? formatTime(record.clock_out, record.work_date) : '未打卡'}
+                                    </span>
+                                </div>
 
+                                {/* 補打卡按鈕 */}
+                                {needsRetroClockOut(record) && (
+                                    <button
+                                        onClick={() => openRetroModal(record)}
+                                        className="w-full py-2 bg-red-500 hover:bg-red-600 text-white rounded-xl font-medium flex items-center justify-center gap-2 transition-colors"
+                                    >
+                                        <Clock className="w-4 h-4" />
+                                        補打卡下班
+                                    </button>
+                                )}
+
+                                {/* 工時顯示（只顯示已完成的記錄） */}
+                                {record.clock_out && (
                                     <div className="grid grid-cols-2 gap-2 pt-2">
                                         <div className="text-center p-2 bg-yellow-50 rounded-lg">
                                             <div className="text-lg font-bold text-primary">
@@ -241,12 +390,12 @@ const Overview = () => {
                                             <div className="text-[10px] text-orange-600">加班</div>
                                         </div>
                                     </div>
-                                </div>
-                            ))}
-                        </div>
+                                )}
+                            </div>
+                        ))}
 
                         {/* 當天總計 */}
-                        {selectedRecords.length > 1 && (
+                        {selectedRecords.length > 1 && !selectedRecords.some(r => needsRetroClockOut(r)) && (
                             <div className="border-t-2 border-gray-200 pt-6">
                                 <h4 className="text-sm font-medium text-secondary mb-4">當天總計</h4>
                                 <div className="grid grid-cols-2 gap-4">
@@ -275,6 +424,60 @@ const Overview = () => {
                     </div>
                 )}
             </div>
+
+            {/* 補打卡 Modal */}
+            {showRetroModal && retroRecord && (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4">
+                        <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                            <Clock className="w-5 h-5 text-primary" />
+                            補打卡下班
+                        </h3>
+                        
+                        <div className="space-y-2">
+                            <p className="text-sm text-secondary">
+                                日期：{retroRecord.work_date?.split('T')[0] || retroRecord.work_date}
+                            </p>
+                            <p className="text-sm text-secondary">
+                                上班時間：{formatTime(retroRecord.clock_in)}
+                            </p>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                選擇下班時間 (20:00 ~ 隔日 05:00)
+                            </label>
+                            <select
+                                value={retroTime}
+                                onChange={(e) => setRetroTime(e.target.value)}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent"
+                            >
+                                {generateTimeOptions().map(time => (
+                                    <option key={time} value={time}>
+                                        {parseInt(time.split(':')[0]) < 5 ? `隔日 ${time}` : time}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div className="flex gap-3">
+                            <button
+                                onClick={() => setShowRetroModal(false)}
+                                className="flex-1 py-2 border border-gray-300 rounded-xl font-medium hover:bg-gray-50 transition-colors"
+                            >
+                                取消
+                            </button>
+                            <button
+                                onClick={submitRetroClockOut}
+                                disabled={retroSubmitting}
+                                className="flex-1 py-2 bg-primary text-white rounded-xl font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                            >
+                                {retroSubmitting ? '處理中...' : '確認'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

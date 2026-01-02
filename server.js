@@ -9,6 +9,7 @@ const attendanceRoutes = require('./routes/attendance');
 const statsRoutes = require('./routes/stats');
 const terminalRoutes = require('./routes/terminal');
 const rewardRoutes = require('./routes/reward');
+const { startDailyResetJob } = require('./scripts/dailyReset');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -63,6 +64,9 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`🚀 伺服器運行於 http://localhost:${PORT}`);
     console.log(`📊 API 文件： http://localhost:${PORT}/`);
+    
+    // 啟動每日結算定時任務
+    startDailyResetJob();
   });
 }
 

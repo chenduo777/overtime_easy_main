@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { clockInOut, getTodayStatus, getRecords } = require('../controllers/attendanceController');
+const { clockInOut, getTodayStatus, getRecords, retroactiveClockOut } = require('../controllers/attendanceController');
 const { authenticateToken } = require('../middleware/auth');
 
 // 所有路由都需要登入
@@ -14,5 +14,8 @@ router.get('/today', getTodayStatus);
 
 // 查詢出勤紀錄
 router.get('/records', getRecords);
+
+// 補打卡下班
+router.patch('/retroactive-clock-out', retroactiveClockOut);
 
 module.exports = router;
