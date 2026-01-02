@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import axios from 'axios';
+import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { Terminal as TerminalIcon, Play } from 'lucide-react';
 
@@ -9,11 +9,6 @@ const Terminal = () => {
     const [queryResults, setQueryResults] = useState(null);
     const [queryError, setQueryError] = useState(null);
     const [isExecuting, setIsExecuting] = useState(false);
-
-    const api = axios.create({
-        baseURL: 'http://localhost:3000/api',
-        headers: { Authorization: `Bearer ${sessionStorage.getItem('token')}` }
-    });
 
     const handleExecuteQuery = async () => {
         if (!sql.trim()) return;
